@@ -22,52 +22,48 @@ import (
 	"github.com/gagliardetto/solana-go/rpc"
 )
 
-// Protocol being used
-const PROTOCOL = "Raydium V4 AMM (Pure On-Chain)"
-
-// Raydium V4 AMM Program ID
-var RAYDIUM_AMM_V4 = solana.MustPublicKeyFromBase58("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8")
-
-// OpenBook/Serum DEX Program ID
-var OPENBOOK_PROGRAM = solana.MustPublicKeyFromBase58("srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX")
-
-// Token decimal constants
+// Configuration constants
 const (
-	SOL_DECIMALS  = 9
-	WSOL_DECIMALS = 9
+	PROTOCOL                 = "Raydium V4 AMM (Pure On-Chain)"
+	AUTHORITY_AMM_SEED       = "amm authority"
+	SOL_DECIMALS             = 9
+	WSOL_DECIMALS            = 9
+	RAYDIUM_SWAP_INSTRUCTION = uint8(9)
+	DEFAULT_SLIPPAGE         = 0.5
+	MAX_SLIPPAGE             = 100.0
+	MIN_SWAP_AMOUNT          = 0.001
+	PRIVATE_KEY_ENV_VAR      = "SOLANA_PRIVATE_KEY"
+	RPC_ENDPOINT             = "https://mainnet.helius-rpc.com/?api-key=YOUR_API_KEY"
+	TRANSACTION_TIMEOUT      = 30 * time.Second
 )
 
-// Known SOL/WSOL addresses
+// Program IDs
 var (
-	SOL_MINT  = solana.SolMint
-	WSOL_MINT = solana.MustPublicKeyFromBase58("So11111111111111111111111111111111111111112")
+	RAYDIUM_AMM_V4   = solana.MustPublicKeyFromBase58("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8")
+	OPENBOOK_PROGRAM = solana.MustPublicKeyFromBase58("srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX")
+	SOL_MINT         = solana.SolMint
+	WSOL_MINT        = solana.MustPublicKeyFromBase58("So11111111111111111111111111111111111111112")
 )
-
-// Raydium swap instruction discriminator
-const RAYDIUM_SWAP_INSTRUCTION = uint8(9)
-
-// Raydium authority PDA seed
-const AUTHORITY_AMM_SEED = "amm authority"
 
 // SwapInstructionData represents the data for a Raydium V4 swap instruction
 type SwapInstructionData struct {
-	Instruction   uint8
-	AmountIn      uint64
-	MinAmountOut  uint64
+	Instruction  uint8
+	AmountIn     uint64
+	MinAmountOut uint64
 }
 
 // TransactionReport contains the swap execution details
 type TransactionReport struct {
-	TxHash         string
-	Status         string
-	AmountIn       float64
-	AmountOut      float64
-	ExpectedPrice  float64
-	ActualPrice    float64
-	Slippage       float64
-	ExplorerURL    string
-	InputToken     string
-	OutputToken    string
+	TxHash        string
+	Status        string
+	AmountIn      float64
+	AmountOut     float64
+	ExpectedPrice float64
+	ActualPrice   float64
+	Slippage      float64
+	ExplorerURL   string
+	InputToken    string
+	OutputToken   string
 }
 
 type QuoteParams struct {
@@ -79,40 +75,47 @@ type QuoteParams struct {
 
 // OnChainPool represents pool data parsed from on-chain
 type OnChainPool struct {
-	Address         solana.PublicKey
-	BaseMint        solana.PublicKey
-	QuoteMint       solana.PublicKey
-	BaseVault       solana.PublicKey
-	QuoteVault      solana.PublicKey
-	BaseAmount      uint64
-	QuoteAmount     uint64
-	BaseDecimals    uint8
-	QuoteDecimals   uint8
+	Address       solana.PublicKey
+	BaseMint      solana.PublicKey
+	QuoteMint     solana.PublicKey
+	BaseVault     solana.PublicKey
+	QuoteVault    solana.PublicKey
+	BaseAmount    uint64
+	QuoteAmount   uint64
+	BaseDecimals  uint8
+	QuoteDecimals uint8
 	// Additional fields for swap instruction
-	Authority       solana.PublicKey
-	OpenOrders      solana.PublicKey
-	TargetOrders    solana.PublicKey
-	MarketProgram   solana.PublicKey
-	Market          solana.PublicKey
-	MarketBids      solana.PublicKey
-	MarketAsks      solana.PublicKey
+	Authority        solana.PublicKey
+	OpenOrders       solana.PublicKey
+	TargetOrders     solana.PublicKey
+	MarketProgram    solana.PublicKey
+	Market           solana.PublicKey
+	MarketBids       solana.PublicKey
+	MarketAsks       solana.PublicKey
 	MarketEventQueue solana.PublicKey
 	MarketBaseVault  solana.PublicKey
 	MarketQuoteVault solana.PublicKey
-	Nonce           uint8
-	MarketNonce     uint8
+	Nonce            uint8
+	MarketNonce      uint8
 }
 
 // loadWallet loads a wallet from the SOLANA_PRIVATE_KEY environment variable
 func loadWallet() (solana.PrivateKey, error) {
-	privateKeyStr := os.Getenv("SOLANA_PRIVATE_KEY")
+	privateKeyStr := os.Getenv(PRIVATE_KEY_ENV_VAR)
 	if privateKeyStr == "" {
-		return nil, fmt.Errorf("SOLANA_PRIVATE_KEY environment variable not set")
+		return nil, fmt.Errorf("%s environment variable not set. Please set it with: export %s=your_key_here",
+			PRIVATE_KEY_ENV_VAR, PRIVATE_KEY_ENV_VAR)
 	}
 
 	privateKey, err := solana.PrivateKeyFromBase58(privateKeyStr)
 	if err != nil {
 		return nil, fmt.Errorf("invalid private key format: %w", err)
+	}
+
+	// Validate that we can derive a public key
+	pubKey := privateKey.PublicKey()
+	if pubKey.IsZero() {
+		return nil, fmt.Errorf("derived public key is invalid")
 	}
 
 	return privateKey, nil
@@ -121,7 +124,7 @@ func loadWallet() (solana.PrivateKey, error) {
 // confirmQuote asks the user to confirm the quote before execution
 func confirmQuote(poolAddress string, side string, amountIn float64, expectedOut float64) bool {
 	scanner := bufio.NewScanner(os.Stdin)
-	
+
 	// Calculate price
 	var price float64
 	if side == "buy" {
@@ -129,7 +132,7 @@ func confirmQuote(poolAddress string, side string, amountIn float64, expectedOut
 	} else {
 		price = expectedOut / amountIn // SOL per token
 	}
-	
+
 	fmt.Printf("\n=== SWAP CONFIRMATION ===\n")
 	fmt.Printf("Pool: %s\n", poolAddress)
 	fmt.Printf("Operation: %s\n", strings.ToUpper(side))
@@ -137,13 +140,13 @@ func confirmQuote(poolAddress string, side string, amountIn float64, expectedOut
 	fmt.Printf("Expected Out: %.9f %s\n", expectedOut, getOutputToken(side))
 	fmt.Printf("Price: %.9f SOL per token\n", price)
 	fmt.Printf("========================\n\n")
-	
+
 	fmt.Print("Do you want to execute this swap? (y/n): ")
 	if !scanner.Scan() {
 		fmt.Println("\nSwap cancelled.")
 		return false
 	}
-	
+
 	response := strings.TrimSpace(strings.ToLower(scanner.Text()))
 	return response == "y" || response == "yes"
 }
@@ -166,30 +169,30 @@ func getOutputToken(side string) string {
 // getSlippageFromUser asks the user for maximum slippage tolerance
 func getSlippageFromUser() (float64, error) {
 	scanner := bufio.NewScanner(os.Stdin)
-	
-	fmt.Print("\nEnter maximum slippage tolerance (%) [default: 0.5]: ")
+
+	fmt.Printf("\nEnter maximum slippage tolerance (%%) [default: %.1f]: ", DEFAULT_SLIPPAGE)
 	if !scanner.Scan() {
-		return 0.5, nil // Use default
+		return DEFAULT_SLIPPAGE, nil
 	}
-	
+
 	input := strings.TrimSpace(scanner.Text())
-	
+
 	// Use default if empty
 	if input == "" {
-		return 0.5, nil
+		return DEFAULT_SLIPPAGE, nil
 	}
-	
+
 	// Parse the input
 	slippage, err := parseFloat(input)
 	if err != nil {
 		return 0, fmt.Errorf("invalid slippage value: %w", err)
 	}
-	
+
 	// Validate range
-	if slippage < 0 || slippage > 100 {
-		return 0, fmt.Errorf("slippage must be between 0 and 100")
+	if slippage < 0 || slippage > MAX_SLIPPAGE {
+		return 0, fmt.Errorf("slippage must be between 0 and %.0f", MAX_SLIPPAGE)
 	}
-	
+
 	return slippage, nil
 }
 
@@ -204,10 +207,10 @@ func parseFloat(s string) (float64, error) {
 func calculateMinAmountOut(expectedOut float64, slippagePercent float64, outputDecimals int) uint64 {
 	// Calculate minimum amount with slippage
 	minAmount := expectedOut * (1 - slippagePercent/100)
-	
+
 	// Convert to raw amount
 	minAmountRaw := uint64(minAmount * math.Pow(10, float64(outputDecimals)))
-	
+
 	return minAmountRaw
 }
 
@@ -251,15 +254,15 @@ func createSwapInstruction(
 ) (solana.Instruction, error) {
 	// Serialize instruction data using little-endian encoding
 	buf := new(bytes.Buffer)
-	
+
 	// Write instruction type (1 byte)
 	buf.WriteByte(RAYDIUM_SWAP_INSTRUCTION)
-	
+
 	// Write amountIn (8 bytes, little-endian)
 	amountInBytes := make([]byte, 8)
 	binary.LittleEndian.PutUint64(amountInBytes, amountIn)
 	buf.Write(amountInBytes)
-	
+
 	// Write minAmountOut (8 bytes, little-endian)
 	minAmountOutBytes := make([]byte, 8)
 	binary.LittleEndian.PutUint64(minAmountOutBytes, minAmountOut)
@@ -342,7 +345,7 @@ func createSwapInstruction(
 		// 17. User owner (signer)
 		{PublicKey: userOwner, IsSigner: true, IsWritable: false},
 	}
-	
+
 	fmt.Printf("\n=== DEBUG - Swap Instruction Accounts ===\n")
 	for i, acc := range accounts {
 		writable := "R"
@@ -356,7 +359,7 @@ func createSwapInstruction(
 		fmt.Printf("%2d. %s (%s)%s\n", i, acc.PublicKey, writable, signer)
 	}
 	fmt.Printf("=========================================\n")
-	
+
 	fmt.Printf("\n=== DEBUG - Swap Parameters ===\n")
 	fmt.Printf("AmountIn: %d\n", amountIn)
 	fmt.Printf("MinAmountOut: %d\n", minAmountOut)
@@ -405,7 +408,7 @@ func executeSwap(
 	fmt.Printf("\n=== DEBUG - Token mints ===\n")
 	fmt.Printf("BaseMint: %s\n", pool.BaseMint)
 	fmt.Printf("QuoteMint: %s\n", pool.QuoteMint)
-	
+
 	// Get decimals
 	pool.BaseDecimals, err = getTokenDecimals(ctx, client, pool.BaseMint.String())
 	if err != nil {
@@ -434,7 +437,7 @@ func executeSwap(
 		pool.MarketAsks = solana.SystemProgramID
 		pool.MarketEventQueue = solana.SystemProgramID
 	}
-	
+
 	// Debug info
 	fmt.Printf("\n=== DEBUG - Pool accounts ===\n")
 	fmt.Printf("Pool: %s\n", pool.Address)
@@ -454,7 +457,6 @@ func executeSwap(
 	fmt.Printf("MarketQuoteVault: %s\n", pool.MarketQuoteVault)
 	fmt.Printf("Nonce: %d\n", pool.Nonce)
 	fmt.Printf("=============================\n")
-	
 
 	// Determine swap direction and mints
 	var (
@@ -499,7 +501,7 @@ func executeSwap(
 	// Get or create ATAs
 	instructions := []solana.Instruction{}
 	signers := []solana.PrivateKey{wallet}
-	
+
 	// Skip compute budget for now to simplify debugging
 
 	// Source ATA
@@ -537,7 +539,7 @@ func executeSwap(
 		fmt.Printf("Creating destination ATA for mint %s\n", destinationMint)
 		instructions = append(instructions, createDestIx)
 	}
-	
+
 	fmt.Printf("\n=== DEBUG - Token Accounts ===\n")
 	fmt.Printf("Source mint: %s\n", sourceMint)
 	fmt.Printf("Source ATA: %s\n", sourceATA)
@@ -586,7 +588,7 @@ func executeSwap(
 	if err != nil {
 		return "", fmt.Errorf("failed to create transaction: %w", err)
 	}
-	
+
 	// Debug transaction info
 	fmt.Printf("\n=== DEBUG - Transaction Info ===\n")
 	fmt.Printf("Instructions count: %d\n", len(instructions))
@@ -615,7 +617,7 @@ func executeSwap(
 
 	// Send transaction with more detailed error handling
 	fmt.Println("\nSending transaction...")
-	
+
 	// First try with preflight to get better error messages
 	sig, err := client.SendTransactionWithOpts(
 		ctx,
@@ -625,7 +627,7 @@ func executeSwap(
 			PreflightCommitment: rpc.CommitmentFinalized,
 		},
 	)
-	
+
 	if err != nil {
 		// If preflight fails, try without it to get the actual on-chain error
 		if strings.Contains(err.Error(), "Transaction signature verification failure") {
@@ -651,15 +653,15 @@ func executeSwap(
 	maxRetries := 30
 	for i := 0; i < maxRetries; i++ {
 		time.Sleep(1 * time.Second)
-		
+
 		status, err := client.GetSignatureStatuses(ctx, false, sig)
 		if err != nil {
 			continue
 		}
-		
+
 		if status != nil && len(status.Value) > 0 && status.Value[0] != nil {
 			if status.Value[0].ConfirmationStatus == rpc.ConfirmationStatusConfirmed ||
-			   status.Value[0].ConfirmationStatus == rpc.ConfirmationStatusFinalized {
+				status.Value[0].ConfirmationStatus == rpc.ConfirmationStatusFinalized {
 				break
 			}
 		}
@@ -718,10 +720,10 @@ func parseSwapResult(
 			for _, postBalance := range postBalances {
 				if postBalance.Owner != nil && postBalance.Owner.String() == wallet.String() &&
 					preBalance.Mint == postBalance.Mint {
-					
+
 					preAmount, _ := strconv.ParseFloat(preBalance.UiTokenAmount.UiAmountString, 64)
 					postAmount, _ := strconv.ParseFloat(postBalance.UiTokenAmount.UiAmountString, 64)
-					
+
 					diff := postAmount - preAmount
 					if diff < 0 {
 						tokenIn = -diff // Amount that left the wallet
@@ -769,14 +771,14 @@ func generateReport(
 	// Calculate prices
 	var expectedPrice, actualPrice float64
 	if side == "buy" {
-		expectedPrice = expectedIn / expectedOut   // SOL per token
+		expectedPrice = expectedIn / expectedOut // SOL per token
 		if actualOut > 0 {
 			actualPrice = actualIn / actualOut
 		} else {
 			actualPrice = expectedPrice
 		}
 	} else {
-		expectedPrice = expectedOut / expectedIn   // SOL per token
+		expectedPrice = expectedOut / expectedIn // SOL per token
 		if actualIn > 0 {
 			actualPrice = actualOut / actualIn
 		} else {
@@ -850,6 +852,11 @@ func main() {
 		log.Fatal("Side must be 'buy' or 'sell'")
 	}
 
+	// Validate minimum amount for safety
+	if amount < MIN_SWAP_AMOUNT {
+		log.Fatalf("Amount too small. Minimum swap amount is %.3f", MIN_SWAP_AMOUNT)
+	}
+
 	// Load wallet if execute flag is set
 	var wallet solana.PrivateKey
 	if execute {
@@ -862,7 +869,14 @@ func main() {
 	}
 
 	ctx := context.Background()
-	client := rpc.New("https://mainnet.helius-rpc.com/?api-key=4a5313a6-8380-4882-ad4e-e745ec00d629")
+
+	// Use RPC endpoint from environment or default
+	rpcURL := os.Getenv("SOLANA_RPC_URL")
+	if rpcURL == "" {
+		rpcURL = "https://mainnet.helius-rpc.com/?api-key=4a5313a6-8380-4882-ad4e-e745ec00d629"
+	}
+
+	client := rpc.New(rpcURL)
 
 	var poolAddress string
 
@@ -902,36 +916,36 @@ func main() {
 			fmt.Println("\nSwap cancelled by user.")
 			return
 		}
-		
+
 		// Get slippage tolerance
 		slippage, err := getSlippageFromUser()
 		if err != nil {
 			log.Fatalf("Failed to get slippage: %v", err)
 		}
-		
+
 		// Get pool data to determine correct output decimals
 		poolPubkey, _ := solana.PublicKeyFromBase58(poolAddress)
 		accountInfo, err := client.GetAccountInfo(ctx, poolPubkey)
 		if err != nil {
 			log.Fatalf("Failed to get pool account: %v", err)
 		}
-		
+
 		pool, err := parsePoolAccount(poolPubkey, accountInfo.Value.Data.GetBinary())
 		if err != nil {
 			log.Fatalf("Failed to parse pool data: %v", err)
 		}
-		
+
 		// Get decimals
 		pool.BaseDecimals, _ = getTokenDecimals(ctx, client, pool.BaseMint.String())
 		pool.QuoteDecimals, _ = getTokenDecimals(ctx, client, pool.QuoteMint.String())
-		
+
 		// Fetch actual vault balances
 		_ = fetchVaultBalances(ctx, client, pool)
-		
+
 		// Calculate minimum amount out with correct decimals
 		var outputDecimals int
 		isBaseSol := pool.BaseMint.Equals(WSOL_MINT) || pool.BaseMint.Equals(SOL_MINT)
-		
+
 		if side == "buy" {
 			// Buying token, output is token
 			if isBaseSol {
@@ -943,28 +957,28 @@ func main() {
 			// Selling token, output is SOL
 			outputDecimals = SOL_DECIMALS
 		}
-		
+
 		minAmountOut := calculateMinAmountOut(quote, slippage, outputDecimals)
-		
+
 		fmt.Printf("\n=== SWAP PARAMETERS ===\n")
 		fmt.Printf("Slippage Tolerance: %.2f%%\n", slippage)
 		fmt.Printf("Expected Out: %.9f\n", quote)
 		fmt.Printf("Minimum Out: %.9f\n", float64(minAmountOut)/math.Pow(10, float64(outputDecimals)))
 		fmt.Printf("======================\n")
-		
+
 		// Execute the swap
 		txHash, err := executeSwap(ctx, client, wallet, poolAddress, side, amount, minAmountOut)
 		if err != nil {
 			log.Fatalf("Swap failed: %v", err)
 		}
-		
+
 		fmt.Printf("\n✅ Swap executed successfully!\n")
 		fmt.Printf("Transaction: %s\n", txHash)
-		
+
 		// Wait a moment for transaction to be fully confirmed
 		fmt.Println("\nFetching transaction details...")
 		time.Sleep(2 * time.Second)
-		
+
 		// Generate and display transaction report
 		report, err := generateReport(ctx, client, wallet.PublicKey(), txHash, side, amount, quote, slippage)
 		if err != nil {
@@ -1083,25 +1097,25 @@ func parsePoolAccount(address solana.PublicKey, data []byte) (*OnChainPool, erro
 	}
 
 	// Raydium V4 AMM pool layout - verified working offsets
-	
+
 	// offset 8: nonce (1 byte within status u64)
 	pool.Nonce = data[8]
-	
+
 	// PublicKey fields start at offset 336
-	pool.BaseVault = solana.PublicKeyFromBytes(data[336:368])       // coin_vault
-	pool.QuoteVault = solana.PublicKeyFromBytes(data[368:400])      // pc_vault  
-	pool.BaseMint = solana.PublicKeyFromBytes(data[400:432])        // coin_mint
-	pool.QuoteMint = solana.PublicKeyFromBytes(data[432:464])       // pc_mint
-	pool.OpenOrders = solana.PublicKeyFromBytes(data[464:496])      // open_orders
-	pool.TargetOrders = solana.PublicKeyFromBytes(data[592:624])    // target_orders
-	pool.Market = solana.PublicKeyFromBytes(data[656:688])          // market
-	pool.MarketProgram = solana.PublicKeyFromBytes(data[688:720])   // market_program
-	
+	pool.BaseVault = solana.PublicKeyFromBytes(data[336:368])     // coin_vault
+	pool.QuoteVault = solana.PublicKeyFromBytes(data[368:400])    // pc_vault
+	pool.BaseMint = solana.PublicKeyFromBytes(data[400:432])      // coin_mint
+	pool.QuoteMint = solana.PublicKeyFromBytes(data[432:464])     // pc_mint
+	pool.OpenOrders = solana.PublicKeyFromBytes(data[464:496])    // open_orders
+	pool.TargetOrders = solana.PublicKeyFromBytes(data[592:624])  // target_orders
+	pool.Market = solana.PublicKeyFromBytes(data[656:688])        // market
+	pool.MarketProgram = solana.PublicKeyFromBytes(data[688:720]) // market_program
+
 	// Get pool amounts - these need to be fetched from vault accounts
 	// Initialize to 0, will be populated by fetchVaultBalances
 	pool.BaseAmount = 0
 	pool.QuoteAmount = 0
-	
+
 	// Calculate authority PDA
 	// According to Raydium source code, authority is derived using only "amm authority" seed
 	authority, nonce, err := solana.FindProgramAddress(
@@ -1110,16 +1124,16 @@ func parsePoolAccount(address solana.PublicKey, data []byte) (*OnChainPool, erro
 		},
 		RAYDIUM_AMM_V4,
 	)
-	
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to derive authority PDA: %w", err)
 	}
-	
+
 	// Verify the nonce matches what's stored in the pool data
 	if nonce != pool.Nonce {
 		fmt.Printf("Warning: Authority nonce mismatch. Expected: %d, Got: %d\n", pool.Nonce, nonce)
 	}
-	
+
 	pool.Authority = authority
 
 	return pool, nil
@@ -1165,7 +1179,7 @@ func fetchMarketData(ctx context.Context, client *rpc.Client, pool *OnChainPool)
 	pool.MarketBids = solana.PublicKeyFromBytes(marketData[316:348])       // Bids
 	pool.MarketAsks = solana.PublicKeyFromBytes(marketData[348:380])       // Asks
 	pool.MarketEventQueue = solana.PublicKeyFromBytes(marketData[252:284]) // Event queue
-	
+
 	// Get vault signer nonce (at offset 45 in Serum V3)
 	if len(marketData) > 45 {
 		pool.MarketNonce = marketData[45]
@@ -1210,27 +1224,26 @@ func fetchVaultBalances(ctx context.Context, client *rpc.Client, pool *OnChainPo
 	if err != nil {
 		return fmt.Errorf("failed to get base vault balance: %w", err)
 	}
-	
+
 	// Get quote vault balance
 	quoteVaultInfo, err := client.GetTokenAccountBalance(ctx, pool.QuoteVault, rpc.CommitmentFinalized)
 	if err != nil {
 		return fmt.Errorf("failed to get quote vault balance: %w", err)
 	}
-	
+
 	// Parse amounts
 	pool.BaseAmount, err = strconv.ParseUint(baseVaultInfo.Value.Amount, 10, 64)
 	if err != nil {
 		return fmt.Errorf("failed to parse base amount: %w", err)
 	}
-	
+
 	pool.QuoteAmount, err = strconv.ParseUint(quoteVaultInfo.Value.Amount, 10, 64)
 	if err != nil {
 		return fmt.Errorf("failed to parse quote amount: %w", err)
 	}
-	
+
 	return nil
 }
-
 
 func calculateQuoteOnChain(ctx context.Context, client *rpc.Client, params QuoteParams) (float64, error) {
 	poolPubkey, err := solana.PublicKeyFromBase58(params.PoolAddress)
@@ -1254,7 +1267,7 @@ func calculateQuoteOnChain(ctx context.Context, client *rpc.Client, params Quote
 	fmt.Printf("\n=== DEBUG - Token mints (calculateQuote) ===\n")
 	fmt.Printf("BaseMint: %s\n", pool.BaseMint)
 	fmt.Printf("QuoteMint: %s\n", pool.QuoteMint)
-	
+
 	// Get decimals
 	pool.BaseDecimals, err = getTokenDecimals(ctx, client, pool.BaseMint.String())
 	if err != nil {
@@ -1287,10 +1300,10 @@ func calculateQuoteOnChain(ctx context.Context, client *rpc.Client, params Quote
 	// Determine swap direction
 	var inputDecimals, outputDecimals int
 	var isBaseToQuote bool
-	
+
 	// Check if base or quote is SOL/WSOL
 	isBaseSol := pool.BaseMint.Equals(WSOL_MINT) || pool.BaseMint.Equals(SOL_MINT)
-	
+
 	if params.Side == "buy" {
 		// Buying: SOL in -> Token out
 		inputDecimals = SOL_DECIMALS
@@ -1348,18 +1361,18 @@ func calculateQuoteOnChain(ctx context.Context, client *rpc.Client, params Quote
 func calculateSwapAmount(reserveOut, reserveIn, amountIn uint64) uint64 {
 	// Constant product AMM formula: x * y = k
 	// amountOut = (reserveOut * amountIn) / (reserveIn + amountIn)
-	
+
 	numerator := new(big.Int).Mul(
 		new(big.Int).SetUint64(reserveOut),
 		new(big.Int).SetUint64(amountIn),
 	)
-	
+
 	denominator := new(big.Int).Add(
 		new(big.Int).SetUint64(reserveIn),
 		new(big.Int).SetUint64(amountIn),
 	)
-	
+
 	result := new(big.Int).Div(numerator, denominator)
-	
+
 	return result.Uint64()
 }
